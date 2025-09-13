@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Eddy Roch - Reproductor M3U / M3U8</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--accent:#3b82f6;--muted:#94a3b8;--glass:rgba(255,255,255,0.03)}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;color:#e6eef8;background:linear-gradient(180deg,#071021 0%, #071b2b 100%)}
+    .app{max-width:1100px;margin:24px auto;padding:20px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border-radius:12px;box-shadow:0 6px 30px rgba(2,6,23,0.6)}
+    header{display:flex;gap:12px;align-items:center;margin-bottom:14px}
+    h1{font-size:20px;margin:0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    input[type=text]{padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:var(--card);color:inherit;min-width:280px}
+    input[type=file]{background:var(--glass);padding:8px;border-radius:8px;color:var(--muted)}
+    button{background:var(--accent);border:0;padding:10px 12px;border-radius:8px;color:white;cursor:pointer}
+    .content{display:grid;grid-template-columns:380px 1fr;gap:14px}
+    .panel{background:var(--card);padding:12px;border-radius:10px;min-height:360px;overflow:auto}
+    .playlist-item{Padding:8px;border-radius:8px;margin-bottom:6px;display:flex;gap:8px;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.01)}
+    .title{font-size:13px}
+    .small{font-size:12px;color:var(--muted)}
+    .player-wrap{display:flex;flex-direction:column;gap:8px}
+    video{width:100%;height:420px;background:black;border-radius:8px}
+    .actions{display:flex;gap:8px}
+    .note{font-size:13px;color:var(--muted);margin-top:8px}
+    .search{margin:8px 0}
+    .flex{display:flex;gap:8px}
+    .pill{padding:6px 8px;border-radius:999px;background:rgba(255,255,255,0.02);font-size:12px}
+    a.link{color:var(--accent);text-decoration:none}
+    footer{margin-top:12px;color:var(--muted);font-size:12px}
+    @media(max-width:880px){.content{grid-template-columns:1fr}video{height:300px}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Eddy Roch - Reproductor M3U / M3U8</h1>
+      <div class="pill small">Soporta archivos .m3u y .m3u8 — usa HLS.js para navegadores no-Safari</div>
+    </header>
+
+    <div class="controls">
+      <input id="urlInput" type="text" placeholder="Pegar URL de .m3u, .m3u8 o URL directa de stream (http://.../index.m3u8)" />
+      <button id="loadUrl">Cargar URL</button>
+      <input id="fileInput" type="file" accept=".m3u,.m3u8,text/plain" />
+      <button id="clearPlaylist">Limpiar lista</button>
+    </div>
+
+    <div class="content">
+      <aside class="panel" id="playlistPanel">
+        <div class="small">Lista de canales / entradas</div>
+        <div id="playlist"></div>
+        <hr/>
+        <div class="small">Archivo incluido: <code>OTTOTV.m3u</code></div>
+        <div class="small">Puedes arrastrarlo al área de archivo o seleccionarlo con el botón.</div>
+      </aside>
+
+      <main class="panel player-wrap">
+        <div>
+          <video id="video" controls playsinline crossorigin="anonymous"></video>
+        </div>
+        <div class="actions">
+          <button id="playPause">Play/Pausa</button>
+          <button id="stopBtn">Detener</button>
+          <button id="openNew">Abrir en nueva pestaña</button>
+          <button id="copyUrl">Copiar URL</button>
+        </div>
+        <div class="note" id="status">Estado: listo</div>
+        <div class="search small">Consejos: Si el stream no carga puede ser por CORS o por que la fuente requiere autenticación. Safari reproduce .m3u8 sin HLS.js; en Chrome/Firefox se usa HLS.js.</div>
+        <footer>Si necesitas funciones adicionales (EPG, autenticación token, autoplay), dime y lo adapto.</footer>
+      </main>
+    </div>
+  </div>
+
+  <!-- HLS.js desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+
+  <script>
+    // Elementos
+    const fileInput = document.getElementById('fileInput');
+    const urlInput = document.getElementById('urlInput');
+    const loadUrlBtn = document.getElementById('loadUrl');
+    const playlistEl = document.getElementById('playlist');
+    const playlistPanel = document.getElementById('playlistPanel');
+    const video = document.getElementById('video');
+    const status = document.getElementById('status');
+    const playPause = document.getElementById('playPause');
+    const stopBtn = document.getElementById('stopBtn');
+    const openNew = document.getElementById('openNew');
+    const copyUrl = document.getElementById('copyUrl');
+
+    let currentHls = null;
+    let currentUrl = '';
+    let entries = []; // {title, url}
+
+    function setStatus(msg){ status.textContent = 'Estado: ' + msg; }
+
+    // Reproductor: carga URL (hls.js si es necesario)
+    async function playStream(url){
+      if(!url) return setStatus('URL vacía');
+      currentUrl = url;
+      // limpiar hls previo
+      if(currentHls){ currentHls.destroy(); currentHls = null; }
+      try{
+        if(Hls.isSupported()){
+          const hls = new Hls();
+          currentHls = hls;
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(()=>{}); setStatus('Reproduciendo (HLS.js)'); });
+          hls.on(Hls.Events.ERROR, (event, data) => { console.warn('HLS error', data); setStatus('Error HLS: '+data.type+' '+data.details); });
+        } else {
+          // Safari u otros que soportan HLS nativo
+          video.src = url;
+          await video.play().catch(()=>{});
+          setStatus('Reproduciendo (nativo)');
+        }
+      } catch(err){
+        console.error(err);
+        setStatus('Error al reproducir: ' + err.message);
+      }
+    }
+
+    function stopPlayback(){
+      if(currentHls){ currentHls.destroy(); currentHls = null; }
+      video.pause();
+      video.removeAttribute('src');
+      try{ video.load(); }catch(e){}
+      currentUrl = '';
+      setStatus('Detenido');
+    }
+
+    // Parse M3U playlists (simple)
+    function parseM3U(text){
+      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l!=="");
+      const items = [];
+      let lastTitle = '';
+      for(const l of lines){
+        if(l.startsWith('#EXTINF')){
+          const comma = l.indexOf(',');
+          lastTitle = (comma > -1) ? l.substring(comma+1).trim() : l;
+        } else if(/^https?:\/\//i.test(l) || /^rtsp:\/\//i.test(l) || /^rtmp:\/\//i.test(l) || /^udp:\/\//i.test(l)){
+          items.push({title: lastTitle || l, url: l});
+          lastTitle = '';
+        } else if(l.endsWith('.m3u8')){
+          // puede ser una referencia a un m3u8
+          items.push({title: lastTitle || l, url: l});
+          lastTitle = '';
+        } else {
+          // ignorar otras líneas (#EXTM3U, comments)
+        }
+      }
+      return items;
+    }
+
+    function renderPlaylist(){
+      playlistEl.innerHTML = '';
+      if(entries.length === 0) { playlistEl.innerHTML = '<div class="small">(sin entradas)</div>'; return; }
+      entries.forEach((e, idx) => {
+        const el = document.createElement('div');
+        el.className = 'playlist-item';
+        const left = document.createElement('div');
+        left.innerHTML = `<div class="title">${escapeHtml(e.title || 'Sin título')}</div><div class="small">${escapeHtml(e.url)}</div>`;
+        const right = document.createElement('div');
+        right.style.display = 'flex'; right.style.gap = '6px';
+        const playBtn = document.createElement('button'); playBtn.textContent = '▶'; playBtn.title='Reproducir';
+        playBtn.onclick = ()=>{ playStream(e.url); }
+        const open = document.createElement('button'); open.textContent='↗'; open.title='Abrir en nueva pestaña'; open.onclick = ()=>window.open(e.url,'_blank');
+        const copy = document.createElement('button'); copy.textContent='⧉'; copy.title='Copiar URL'; copy.onclick = ()=>navigator.clipboard.writeText(e.url).then(()=>setStatus('URL copiada'));
+        right.appendChild(playBtn); right.appendChild(open); right.appendChild(copy);
+        el.appendChild(left); el.appendChild(right);
+        playlistEl.appendChild(el);
+      });
+    }
+
+    function escapeHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    // Cargar desde archivo .m3u / .m3u8
+    fileInput.addEventListener('change', async (ev)=>{
+      const f = ev.target.files && ev.target.files[0];
+      if(!f) return;
+      setStatus('Leyendo archivo...');
+      const text = await f.text();
+      // Si es .m3u o contiene varias URLs => parsear
+      const parsed = parseM3U(text);
+      if(parsed.length>0){ entries = entries.concat(parsed); renderPlaylist(); setStatus('Playlist cargada ('+entries.length+' entradas)'); }
+      else {
+        // intentar ver si es un único m3u8 local o playlist con una sola URL
+        const urlCandidate = text.split(/\r?\n/).map(l=>l.trim()).find(l=>l && !l.startsWith('#'));
+        if(urlCandidate){ entries.push({title: f.name, url: urlCandidate}); renderPlaylist(); setStatus('Entrada única añadida'); }
+        else setStatus('No se detectaron URLs en el archivo');
+      }
+      // reset input para poder re-subir mismo archivo si se desea
+      fileInput.value = null;
+    });
+
+    // Cargar URL externa
+    loadUrlBtn.addEventListener('click', async ()=>{
+      const url = urlInput.value.trim();
+      if(!url) return setStatus('Introduce una URL');
+      setStatus('Cargando URL: ' + url);
+      try{
+        // Intentemos obtener el texto si es .m3u o .m3u8
+        if(url.endsWith('.m3u') || url.endsWith('.m3u8')){
+          // fetch la lista (puede fallar por CORS)
+          const res = await fetch(url);
+          if(!res.ok) throw new Error('HTTP ' + res.status);
+          const text = await res.text();
+          const parsed = parseM3U(text);
+          if(parsed.length>0){ entries = entries.concat(parsed); renderPlaylist(); setStatus('Playlist remota cargada ('+entries.length+' entradas)'); return; }
+          // si no detecta entradas, intentar reproducir directo
+        }
+        // Si no es playlist o parse falló, reproducir la URL como stream
+        playStream(url);
+      } catch(err){
+        console.error(err);
+        setStatus('Error al cargar URL (CORS o inaccesible): ' + err.message + '. Si es una playlist remota, el servidor debe permitir CORS.');
+      }
+    });
+
+    // Botones de control
+    playPause.addEventListener('click', ()=>{ if(video.paused) video.play().catch(()=>{}); else video.pause(); });
+    stopBtn.addEventListener('click', ()=>stopPlayback());
+    openNew.addEventListener('click', ()=>{ if(currentUrl) window.open(currentUrl,'_blank'); else setStatus('No hay URL cargada'); });
+    copyUrl.addEventListener('click', ()=>{ if(currentUrl) navigator.clipboard.writeText(currentUrl).then(()=>setStatus('URL actual copiada')); else setStatus('No hay URL actual'); });
+
+    document.getElementById('clearPlaylist').addEventListener('click', ()=>{ entries = []; renderPlaylist(); setStatus('Lista limpiada'); });
+
+    // Atajos: doble click en playlist para reproducir
+    playlistEl.addEventListener('dblclick', (ev)=>{
+      const node = ev.target.closest('.playlist-item');
+      if(!node) return;
+      const idx = Array.from(playlistEl.children).indexOf(node);
+      if(idx>=0 && entries[idx]) playStream(entries[idx].url);
+    });
+
+    // Mensaje sobre CORS/DRM
+    setStatus('listo');
+  </script>
+</body>
+</html>
